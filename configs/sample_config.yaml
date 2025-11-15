@@ -1,0 +1,35 @@
+# Columns listed here override automatic detection.
+# Each entry follows:
+#   column: <name>
+#   detector_hint: <name|email|phone|address|dob|numeric_id|salary|custom>
+#   technique: <mask|pseudonym|hash|shuffle|generalize|noise>
+#   params: technique-specific extras (optional)
+
+overrides:
+  - column: email
+    detector_hint: email
+    technique: hash
+    params:
+      salt: "demo-salt"
+  - column: birth_date
+    detector_hint: dob
+    technique: generalize
+    params:
+      granularity: decade
+  - column: income
+    detector_hint: salary
+    technique: noise
+    params:
+      epsilon: 1.0
+  - column: full_name
+    detector_hint: name
+    technique: pseudonym
+
+# Columns you explicitly mark as safe are excluded from processing.
+allowlist:
+  - customer_segment
+
+default_strategy:
+  reversible: pseudonym
+  irreversible: hash
+

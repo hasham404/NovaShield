@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Raw / anonymized data
+*.csv
+configs/generated/
+anonymized_*.csv
+*_anonymized.csv
+*_irrev*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/

@@ -1,0 +1,66 @@
+# Healthcare Dataset Anonymization Configuration
+# Optimized for medical records with HIPAA compliance considerations
+
+overrides:
+  # Patient names - use pseudonymization (reversible) or hash (irreversible)
+  - column: Name
+    detector_hint: name
+    technique: pseudonym
+    params:
+      mode: name
+      locale: en_US
+  
+  # Doctor names - also sensitive, use pseudonym
+  - column: Doctor
+    detector_hint: name
+    technique: pseudonym
+    params:
+      mode: name
+      locale: en_US
+  
+  # Dates - generalize to preserve temporal patterns while hiding exact dates
+  - column: Date of Admission
+    detector_hint: dob
+    technique: generalize  # still aggregated for privacy in both modes
+    params:
+      granularity: month  # Shows year-month only
+  
+  - column: Discharge Date
+    detector_hint: dob
+    technique: generalize
+    params:
+      granularity: month
+  
+  # Billing Amount - add noise for differential privacy (preserves statistical properties)
+  - column: Billing Amount
+    detector_hint: salary
+    # For irreversible anonymization we rely on the pipeline's
+    # salary rule (shuffle) which preserves the distribution.
+    # This explicit override keeps the label but defers the
+    # concrete technique choice to the mode (reversible/irreversible).
+    technique: shuffle
+  
+  # Room Number - tokenize to preserve relationships while anonymizing
+  - column: Room Number
+    detector_hint: numeric_id
+    technique: tokenize
+  
+  # Age - can be generalized or kept as-is (already somewhat anonymized)
+  # Leaving Age as-is since it's already aggregated data
+  # If needed, uncomment below:
+  # - column: Age
+  #   detector_hint: dob
+  #   technique: generalize
+  #   params:
+  #     bucket_size: 10  # Group into 10-year ranges
+
+# Columns that are safe to keep as-is (categorical medical data)
+allowlist:
+  # These are already anonymized categorical values
+  # Gender, Blood Type, Medical Condition, etc. can be shuffled if needed
+  # but are generally safe for sharing
+
+default_strategy:
+  reversible: pseudonym
+  irreversible: hash
+
