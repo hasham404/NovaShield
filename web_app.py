@@ -7,7 +7,7 @@ from zipfile import ZipFile
 
 import yaml
 from dotenv import load_dotenv
-from flask import Flask, render_template_string, request, send_file, redirect, url_for, flash
+from flask import Flask, render_template_string, request, send_file, redirect, url_for, flash, abort
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -37,14 +37,18 @@ PAGE_TEMPLATE = """
     />
     <style>
       :root {
-        --bg-gradient: radial-gradient(circle at top left, #0f172a, #020617 45%, #111827);
-        --accent-primary: #38bdf8;
-        --accent-secondary: #a855f7;
+        --bg-color: #000000;
+        --card-bg: #050814;
+        --accent-primary: #6366f1;
+        --accent-secondary: #22c55e;
+        --text-main: #f9fafb;
       }
       body {
         min-height: 100vh;
-        background: var(--bg-gradient);
-        color: #e5e7eb;
+        background: radial-gradient(circle at top left, #111827, transparent 55%),
+                    radial-gradient(circle at bottom right, #020617, transparent 55%),
+                    var(--bg-color);
+        color: var(--text-main);
         display: flex;
         align-items: flex-start;
         justify-content: center;
@@ -56,9 +60,7 @@ PAGE_TEMPLATE = """
         max-width: 1280px;
       }
       .glass-card {
-        background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.03), transparent 60%),
-                    radial-gradient(circle at bottom right, rgba(168, 85, 247, 0.08), transparent 60%),
-                    rgba(15, 23, 42, 0.94);
+        background: var(--card-bg);
         border-radius: 18px;
         border: 1px solid rgba(148, 163, 184, 0.4);
         box-shadow:
@@ -97,12 +99,12 @@ PAGE_TEMPLATE = """
         background: linear-gradient(135deg, #0ea5e9, #8b5cf6);
       }
       .mode-card {
-        background: rgba(15, 23, 42, 0.96);
+        background: #020617;
         border-radius: 14px;
         border: 1px solid rgba(75, 85, 99, 0.7);
       }
       .stat-card {
-        background: rgba(15, 23, 42, 0.9);
+        background: #020617;
         border-radius: 12px;
         border: 1px solid rgba(31, 41, 55, 0.9);
         padding: 10px 12px;
@@ -187,6 +189,25 @@ PAGE_TEMPLATE = """
                 </div>
               </div>
             </div>
+
+            {% if num_columns is not none %}
+              <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                <span class="check-pill">
+                  Columns: {{ num_columns }}
+                </span>
+                <span class="check-pill">
+                  Sensitive: {{ num_sensitive or 0 }}
+                </span>
+                <span class="check-pill">
+                  Mode: {{ mode_label or 'Reversible' }}
+                </span>
+                {% if utility_score is not none %}
+                  <span class="check-pill">
+                    Utility: {{ '%.1f' % utility_score }}/100
+                  </span>
+                {% endif %}
+              </div>
+            {% endif %}
 
             <div class="row g-3">
               <div class="col-sm-6">
@@ -311,12 +332,50 @@ PAGE_TEMPLATE = """
               </span>
             {% endif %}
           </div>
+          {% if column_chips %}
+            <div class="mb-2 d-flex flex-wrap gap-1">
+              {% for chip in column_chips %}
+                <span class="badge bg-secondary-subtle text-secondary">
+                  {{ chip.name }} · {{ chip.technique }}
+                </span>
+              {% endfor %}
+            </div>
+          {% endif %}
           {% if ldiv_note %}
             <p class="text-muted small mb-2">
               {{ ldiv_note }}
             </p>
           {% endif %}
-          <pre class="bg-black text-light border border-secondary rounded-3 p-3">{{ report }}</pre>
+          <div class="position-relative">
+            <button
+              id="report-fullscreen-toggle"
+              type="button"
+              class="btn btn-sm btn-outline-light position-absolute"
+              style="top: 8px; right: 8px; z-index: 2; font-size: 0.7rem;"
+            >
+              Toggle full screen
+            </button>
+            <pre
+              id="report-block"
+              class="bg-black text-light border border-secondary rounded-3 p-3"
+              style="transition: max-height 0.2s ease;"
+            >{{ report }}</pre>
+          </div>
+
+          {% if cfg_name %}
+            <div class="mt-3 d-flex flex-wrap align-items-center gap-2">
+              <p class="small text-muted mb-0">
+                A dataset-specific YAML config was generated for this run:
+                <code class="small">configs/generated/{{ cfg_name }}</code>
+              </p>
+              <a
+                class="btn btn-sm btn-outline-info"
+                href="{{ url_for('download_config', name=cfg_name) }}"
+              >
+                Download YAML config
+              </a>
+            </div>
+          {% endif %}
         </section>
       {% endif %}
     </main>
@@ -331,6 +390,23 @@ PAGE_TEMPLATE = """
         form.addEventListener("submit", function () {
           btn.disabled = true;
           spinner.classList.remove("d-none");
+        });
+      })();
+
+      // Full-screen toggle for the report area.
+      (function () {
+        const btn = document.getElementById("report-fullscreen-toggle");
+        const block = document.getElementById("report-block");
+        if (!btn || !block) return;
+
+        btn.addEventListener("click", function () {
+          if (block.classList.contains("report-fullscreen")) {
+            block.classList.remove("report-fullscreen");
+            block.style.maxHeight = "420px";
+          } else {
+            block.classList.add("report-fullscreen");
+            block.style.maxHeight = "80vh";
+          }
         });
       })();
     </script>
@@ -350,7 +426,7 @@ def _load_default_config():
     return load_config(None)
 
 
-def _generate_config_for_dataset(dataset_path: str, irreversible: bool) -> ToolConfig:
+def _generate_config_for_dataset(dataset_path: str, irreversible: bool) -> tuple[ToolConfig, Path]:
     """
     Inspect the uploaded dataset and automatically build a YAML config
     tailored to its schema. The generated config is written to
@@ -390,8 +466,9 @@ def _generate_config_for_dataset(dataset_path: str, irreversible: bool) -> ToolC
     out_path = out_dir / f"{Path(dataset_path).stem}_config.yaml"
     out_path.write_text(yaml.safe_dump(config_dict, sort_keys=False), encoding="utf-8")
 
-    # Build a ToolConfig instance from the generated dictionary.
-    return ToolConfig.from_dict(config_dict)
+    # Build a ToolConfig instance from the generated dictionary and return
+    # it together with the path so the UI can offer the YAML for download.
+    return ToolConfig.from_dict(config_dict), out_path
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -416,7 +493,7 @@ def index():
 
         # Automatically generate a dataset-specific config based on the
         # uploaded file, then use it for anonymization.
-        cfg = _generate_config_for_dataset(input_path, irreversible=irreversible)
+        cfg, cfg_path = _generate_config_for_dataset(input_path, irreversible=irreversible)
         pipeline = AnonymizationPipeline(cfg, irreversible=irreversible)
 
         if inspect_only:
@@ -443,11 +520,45 @@ def index():
                     "a basic l-diversity constraint."
                 )
 
+            # Build lightweight structured metadata for the UI summary.
+            columns = list(result.dataframe.columns)
+            num_columns = len(columns)
+            num_sensitive = len(result.detections)
+            mode_label = "Irreversible" if irreversible else "Reversible"
+
+            column_chips = []
+            sel_map = {sel.column: sel for sel in result.selections}
+            for det in result.detections:
+                sel = sel_map.get(det.column)
+                technique = sel.technique if sel else "-"
+                column_chips.append(
+                    {
+                        "name": det.column,
+                        "detector": det.detector,
+                        "technique": technique,
+                    }
+                )
+
+            # Try to extract numeric utility score from the text line.
+            utility_score = None
+            if utility_line:
+                try:
+                    utility_score = float(utility_line.split(":")[-1].strip())
+                except Exception:
+                    utility_score = None
+
             return render_template_string(
                 PAGE_TEMPLATE,
                 report=report_text,
                 utility_line=utility_line,
                 ldiv_note=ldiv_note,
+                cfg_name=cfg_path.name,
+                columns=columns,
+                num_columns=num_columns,
+                num_sensitive=num_sensitive,
+                mode_label=mode_label,
+                utility_score=utility_score,
+                column_chips=column_chips,
             )
 
         output_filename = f"anonymized_{file.filename}"
@@ -495,7 +606,34 @@ def index():
 
         return send_file(bundle_path, as_attachment=True, download_name=bundle_name)
 
-    return render_template_string(PAGE_TEMPLATE, report=report_text, utility_line=utility_line, ldiv_note=ldiv_note)
+    # Initial GET or fall-through: render page with empty/default metadata.
+    return render_template_string(
+        PAGE_TEMPLATE,
+        report=report_text,
+        utility_line=utility_line,
+        ldiv_note=ldiv_note,
+        cfg_name=None,
+        columns=None,
+        num_columns=None,
+        num_sensitive=None,
+        mode_label=None,
+        utility_score=None,
+        column_chips=None,
+    )
+
+
+@app.route("/download-config")
+def download_config():
+    """
+    Download a generated YAML config from configs/generated by filename.
+    """
+    name = request.args.get("name")
+    if not name:
+        abort(400)
+    cfg_path = BASE_DIR / "configs" / "generated" / name
+    if not cfg_path.exists():
+        abort(404)
+    return send_file(str(cfg_path), as_attachment=True, download_name=name)
 
 
 if __name__ == "__main__":
