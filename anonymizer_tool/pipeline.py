@@ -8,6 +8,7 @@ import pandas as pd
 
 from .config import ToolConfig
 from .detectors import DetectionResult, detect_sensitive_columns
+from .logging_utils import get_logger
 from .report import summarize, compute_utility_report
 from .strategies import StrategySelection, apply_strategy
 from .utils import load_dataset, save_dataset
@@ -52,9 +53,15 @@ class AnonymizationPipeline:
         self.config = config
         self.irreversible = irreversible
 
-        # Optional process-wide secret for hashing. In a production system
-        # this should come from a proper secret manager or environment variable.
+        # Process-wide secret for hashing. In a production system this should
+        # come from a proper secret manager or environment variable.
         self._secret_salt = os.getenv("ANONYMIZER_SECRET", "")
+        if self.irreversible and not self._secret_salt:
+            raise RuntimeError(
+                "Irreversible anonymization requires ANONYMIZER_SECRET to be set."
+            )
+
+        self._logger = get_logger("anonymizer.pipeline")
 
     def _with_hash_params(self, column: str, base: Dict[str, object]) -> Dict[str, object]:
         """
@@ -152,7 +159,7 @@ class AnonymizationPipeline:
         if sensitive_col not in df.columns or not quasi_cols:
             return df
 
-        l = 2  # minimum number of distinct conditions in each quasi-ID group
+        l = 3  # minimum number of distinct conditions in each quasi-ID group
         groups = df.groupby(quasi_cols)[sensitive_col]
         for _, idx in groups.groups.items():
             values = df.loc[idx, sensitive_col]
@@ -188,6 +195,10 @@ class AnonymizationPipeline:
           and utility calculation. This is intended for fast UI previews.
         """
         # First pass: compute detections and selections on the original data
+        self._logger.info(
+            "starting anonymization run",
+            extra={"dataset_path": dataset_path, "irreversible": self.irreversible},
+        )
         result = self.inspect(dataset_path)
         if inspect_only:
             return result
@@ -222,5 +233,16 @@ class AnonymizationPipeline:
         result.dataframe = df
         if output_path:
             save_dataset(df, output_path)
+            self._logger.info(
+                "anonymization run completed",
+                extra={
+                    "dataset_path": dataset_path,
+                    "output_path": output_path,
+                    "irreversible": self.irreversible,
+                    "rows": len(df),
+                    "columns": list(df.columns),
+                    "techniques": {s.column: s.technique for s in result.selections},
+                },
+            )
         return result
 

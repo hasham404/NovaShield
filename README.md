@@ -1,6 +1,6 @@
 ## Data Anonymization Tool
 
-This repository contains a reference implementation of the anonymization platform described in `Proposal-project  .md`. The goal is to ingest structured datasets (CSV/Excel), detect sensitive columns, and apply configurable anonymization techniques while preserving analytical utility.
+This repository contains a reference implementation of the anonymization platform. The goal is to ingest structured datasets (CSV/Excel), detect sensitive columns, and apply configurable anonymization techniques while preserving analytical utility.
 
 ### Key Features
 - Automatic sensitive-column detection using pattern- and semantic-based heuristics
@@ -12,7 +12,6 @@ This repository contains a reference implementation of the anonymization platfor
 ### Project Layout
 ```
 .
-├── Proposal-project  .md      # Original proposal
 ├── README.md                  # This guide
 ├── requirements.txt           # Python dependencies
 ├── cli.py                     # Entry point for the CLI tool
@@ -71,6 +70,12 @@ Run lint/tests after activating the virtual environment:
 pytest
 ```
 (A minimal smoke test is included; extend as needed for your datasets.)
+
+For static security analysis, see `SAST_REPORT.md` and run:
+
+```bash
+bandit -r anonymizer_tool cli.py web_app.py
+```
 
 ### Next Steps
 - Extend detectors with ML models or dataset-specific dictionaries

@@ -8,6 +8,11 @@ anonymized_*.csv
 *_anonymized.csv
 *_irrev*.csv
 
+# Markdown files
+SECURITY_REPORT.md
+SAST_REPORT.md
+BANDIT_REPORT.md
+
 # Python
 __pycache__/
 *.pyc

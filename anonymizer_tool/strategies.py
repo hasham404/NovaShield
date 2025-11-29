@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import random
+import hashlib
+import secrets
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
 import numpy as np
 import pandas as pd
-from Crypto.Hash import SHA256
 from faker import Faker
 
 faker = Faker()
@@ -16,11 +16,18 @@ StrategyFunc = Callable[[pd.Series, Dict[str, Any]], pd.Series]
 
 
 def _ensure_seed(params: Dict[str, Any]) -> int:
+    """
+    Ensure a stable seed value for pseudo-random operations.
+
+    When no seed is provided in params, we generate one using Python's
+    secrets module (suitable for security-sensitive seeding) and store it
+    back into params, so repeated calls with the same params are stable.
+    """
     seed = params.get("seed")
     if seed is None:
-        seed = random.randint(0, 2**32 - 1)
+        seed = secrets.randbits(32)
         params["seed"] = seed
-    return seed
+    return int(seed)
 
 
 def pseudonym_strategy(series: pd.Series, params: Dict[str, Any]) -> pd.Series:
@@ -82,7 +89,7 @@ def hash_strategy(series: pd.Series, params: Dict[str, Any]) -> pd.Series:
     def compute(value: Any) -> Any:
         if pd.isna(value):
             return value
-        h = SHA256.new()
+        h = hashlib.sha256()
         # Order: salt -> column -> value
         if salt:
             h.update(str(salt).encode("utf-8"))

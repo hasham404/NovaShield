@@ -32,6 +32,7 @@ def anonymize(
 ) -> None:
     # Load environment variables from a .env file if present (for secrets like ANONYMIZER_SECRET)
     load_dotenv()
+    _ensure_local_path(input)
     cfg = load_config(config)
     pipeline = AnonymizationPipeline(cfg, irreversible=irreversible)
     result = pipeline.anonymize(
@@ -65,6 +66,7 @@ def suggest_config(
     before running anonymization.
     """
     load_dotenv()
+    _ensure_local_path(input)
 
     cfg = ToolConfig()  # start from an empty/default config
     pipeline = AnonymizationPipeline(cfg, irreversible=irreversible)
@@ -104,6 +106,19 @@ def suggest_config(
 def _derive_output_path(input_path: str) -> str:
     original = Path(input_path)
     return str(original.with_name(f"{original.stem}_anonymized{original.suffix}"))
+
+
+def _ensure_local_path(path: str) -> None:
+    """
+    Guard against accidental or future support for remote URL inputs by
+    requiring that CLI dataset paths are local filesystem paths.
+
+    This is a basic SSRF hardening measure for future extensions.
+    """
+    if "://" in path:
+        raise typer.BadParameter(
+            "Remote URLs are not supported as input. Please provide a local file path."
+        )
 
 
 if __name__ == "__main__":

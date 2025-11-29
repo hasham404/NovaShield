@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import os
+import re
+import secrets
+import shutil
 import tempfile
 from pathlib import Path
 from zipfile import ZipFile
 
 import yaml
 from dotenv import load_dotenv
-from flask import Flask, render_template_string, request, send_file, redirect, url_for, flash, abort
+from flask import (
+    Flask,
+    abort,
+    after_this_request,
+    flash,
+    redirect,
+    render_template_string,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -15,10 +29,11 @@ from anonymizer_tool import AnonymizationPipeline
 from anonymizer_tool.config import ToolConfig, load_config
 
 
-load_dotenv()  # Load secrets like ANONYMIZER_SECRET from a .env file if present
+load_dotenv()  # Load secrets like ANONYMIZER_SECRET / APP_SECRET_KEY from a .env file if present
 
 app = Flask(__name__)
-app.secret_key = "change-me-in-production"
+app.secret_key = os.getenv("APP_SECRET_KEY") or os.getenv("ANONYMIZER_SECRET") or secrets.token_hex(32)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB upload limit
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,11 +52,20 @@ PAGE_TEMPLATE = """
     />
     <style>
       :root {
+        /* Default (dark) theme tokens */
         --bg-color: #000000;
         --card-bg: #050814;
         --accent-primary: #6366f1;
         --accent-secondary: #22c55e;
         --text-main: #f9fafb;
+      }
+      [data-theme="light"] {
+        /* Light theme overrides */
+        --bg-color: #f9fafb;
+        --card-bg: #ffffff;
+        --accent-primary: #2563eb;
+        --accent-secondary: #22c55e;
+        --text-main: #111827;
       }
       body {
         min-height: 100vh;
@@ -102,12 +126,14 @@ PAGE_TEMPLATE = """
         background: #020617;
         border-radius: 14px;
         border: 1px solid rgba(75, 85, 99, 0.7);
+        color: #f9fafb;  /* ensure text is light on dark card in both themes */
       }
       .stat-card {
         background: #020617;
         border-radius: 12px;
         border: 1px solid rgba(31, 41, 55, 0.9);
         padding: 10px 12px;
+        color: #f9fafb;  /* ensure text is light on dark card in both themes */
       }
       .stat-label {
         font-size: 0.7rem;
@@ -118,6 +144,22 @@ PAGE_TEMPLATE = """
       .stat-value {
         font-size: 1.05rem;
         font-weight: 600;
+      }
+      .stat-card small {
+        color: #e5e7eb;  /* lighter text for readability on dark background */
+      }
+      /* Ensure dark panels keep light text in both themes */
+      .bg-dark {
+        color: #f9fafb;
+      }
+      .bg-dark .form-label,
+      .bg-dark .form-check-label,
+      .bg-dark .text-secondary {
+        color: #e5e7eb;
+      }
+      /* Ensure text that is white in dark mode becomes dark in light mode */
+      [data-theme="light"] .text-light {
+        color: #111827 !important;
       }
       .check-pill {
         font-size: 0.78rem;
@@ -137,7 +179,7 @@ PAGE_TEMPLATE = """
       }
     </style>
   </head>
-  <body>
+  <body data-theme="dark">
     <main class="app-shell">
       <header class="d-flex flex-wrap justify-content-between align-items-center mb-4">
         <div class="d-flex align-items-center gap-3">
@@ -148,9 +190,19 @@ PAGE_TEMPLATE = """
             Secure SDLC · Privacy by Design
           </div>
         </div>
-        <span class="pill bg-dark border border-secondary text-secondary d-none d-sm-inline">
-          Reversible &amp; Irreversible anonymization · Utility-aware masking
-        </span>
+        <div class="d-flex align-items-center gap-2">
+          <span class="pill bg-dark border border-secondary text-secondary d-none d-sm-inline">
+            Reversible &amp; Irreversible anonymization · Utility-aware masking
+          </span>
+          <button
+            id="theme-toggle"
+            type="button"
+            class="btn btn-sm btn-outline-light"
+            style="border-radius: 999px; font-size: 0.7rem;"
+          >
+            Light theme
+          </button>
+        </div>
       </header>
 
       <section class="glass-card p-4 p-md-5 mb-4">
@@ -252,6 +304,7 @@ PAGE_TEMPLATE = """
               enctype="multipart/form-data"
               class="bg-dark border border-secondary rounded-3 p-3"
             >
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <div class="mb-3">
                 <label for="dataset" class="form-label">
                   Dataset file
@@ -393,6 +446,25 @@ PAGE_TEMPLATE = """
         });
       })();
 
+      // Theme toggle (dark / light) persisted in localStorage.
+      (function () {
+        const root = document.body;
+        const toggle = document.getElementById("theme-toggle");
+        if (!root || !toggle) return;
+
+        const stored = window.localStorage.getItem("nova-theme") || "dark";
+        root.setAttribute("data-theme", stored);
+        toggle.textContent = stored === "light" ? "Dark theme" : "Light theme";
+
+        toggle.addEventListener("click", function () {
+          const current = root.getAttribute("data-theme") || "dark";
+          const next = current === "dark" ? "light" : "dark";
+          root.setAttribute("data-theme", next);
+          window.localStorage.setItem("nova-theme", next);
+          toggle.textContent = next === "light" ? "Dark theme" : "Light theme";
+        });
+      })();
+
       // Full-screen toggle for the report area.
       (function () {
         const btn = document.getElementById("report-fullscreen-toggle");
@@ -471,6 +543,28 @@ def _generate_config_for_dataset(dataset_path: str, irreversible: bool) -> tuple
     return ToolConfig.from_dict(config_dict), out_path
 
 
+@app.after_request
+def set_security_headers(response):
+    """
+    Set a small set of security-related HTTP headers to harden the UI.
+    """
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    # Content-Security-Policy allows our inline styles/scripts and Bootstrap CDN.
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers.setdefault("Content-Security-Policy", csp)
+    return response
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     report_text = None
@@ -478,6 +572,11 @@ def index():
     ldiv_note = None
 
     if request.method == "POST":
+        # Basic CSRF protection: verify a token stored in the session.
+        token = request.form.get("csrf_token")
+        if not token or token != session.get("csrf_token"):
+            abort(400)
+
         file = request.files.get("dataset")
         inspect_only = bool(request.form.get("inspect"))
         irreversible = bool(request.form.get("irreversible"))
@@ -486,9 +585,28 @@ def index():
             flash("Please choose a dataset file.")
             return redirect(url_for("index"))
 
-        # Use a temporary directory for processing
+        # Validate file extension to avoid unsupported types.
+        filename = file.filename or ""
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in {".csv", ".xlsx"}:
+            flash("Unsupported file type. Please upload a CSV or Excel file.")
+            return redirect(url_for("index"))
+
+        # Use a temporary directory for processing. We register a cleanup
+        # handler so that raw uploads and intermediate artifacts do not
+        # accumulate on disk.
         tmpdir = tempfile.mkdtemp(prefix="anonymizer_")
-        input_path = os.path.join(tmpdir, file.filename)
+
+        @after_this_request
+        def _cleanup(response):
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return response
+
+        # Sanitize the filename to avoid any path components or unexpected
+        # characters. This name is only used within the temporary directory
+        # and in user-facing downloads.
+        safe_name = re.sub(r"[^A-Za-z0-9_.\\-]", "_", os.path.basename(filename))
+        input_path = os.path.join(tmpdir, safe_name)
         file.save(input_path)
 
         # Automatically generate a dataset-specific config based on the
@@ -561,7 +679,7 @@ def index():
                 column_chips=column_chips,
             )
 
-        output_filename = f"anonymized_{file.filename}"
+        output_filename = f"anonymized_{safe_name}"
         output_path = os.path.join(tmpdir, output_filename)
         result = pipeline.anonymize(
             dataset_path=input_path,
@@ -607,6 +725,9 @@ def index():
         return send_file(bundle_path, as_attachment=True, download_name=bundle_name)
 
     # Initial GET or fall-through: render page with empty/default metadata.
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+
     return render_template_string(
         PAGE_TEMPLATE,
         report=report_text,
@@ -619,6 +740,7 @@ def index():
         mode_label=None,
         utility_score=None,
         column_chips=None,
+        csrf_token=session["csrf_token"],
     )
 
 
@@ -630,6 +752,9 @@ def download_config():
     name = request.args.get("name")
     if not name:
         abort(400)
+    # Only allow simple filenames to prevent path traversal.
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", name):
+        abort(400)
     cfg_path = BASE_DIR / "configs" / "generated" / name
     if not cfg_path.exists():
         abort(404)
@@ -637,6 +762,9 @@ def download_config():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Debug mode should only be enabled explicitly for local development by
+    # setting FLASK_DEBUG=1 in the environment.
+    debug = os.getenv("FLASK_DEBUG") == "1"
+    app.run(debug=debug)
 
 
