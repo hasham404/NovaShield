@@ -12,6 +12,7 @@ anonymized_*.csv
 SECURITY_REPORT.md
 SAST_REPORT.md
 BANDIT_REPORT.md
+bandit_findings.md
 
 # Python
 __pycache__/
